@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tm-ingestion-postgres
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Bootstrap the schema on first launch (runs only when pgdata is empty).
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tm-ingestion-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVICE_NAME: tm-agentic-ingestion-service
+      LOG_LEVEL: INFO
+      LOG_FORMAT: console
+
+      USE_PARAMETER_STORE: "false"
+      AWS_REGION: us-east-1
+
+      PG_DSN: postgresql+psycopg://rag:rag@postgres:5432/rag
+      PG_POOL_SIZE: 10
+
+      S3_BUCKET: ${S3_BUCKET:-rag-496359311344-us-east-1-an}
+
+      NVIDIA_BASE_URL: https://integrate.api.nvidia.com/v1
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-dev-key}
+      VLM_MODEL: nvidia/llama-3.1-nemotron-nano-vl-8b-v1
+      EMBED_MODEL: nvidia/llama-nemotron-embed-1b-v2
+      EMBED_DIM: "1536"
+
+      CHUNK_SIZE: "800"
+      CHUNK_OVERLAP: "100"
+      MAX_RETRIES: "3"
+
+      CB_VLM_FAIL_MAX: "3"
+      CB_VLM_RESET_TIMEOUT: "60"
+      CB_EMBED_FAIL_MAX: "3"
+      CB_EMBED_RESET_TIMEOUT: "60"
+
+      # AWS credentials (mount or override at runtime)
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
