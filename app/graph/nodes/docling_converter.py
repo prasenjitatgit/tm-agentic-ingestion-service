@@ -29,9 +29,6 @@ _SPEAKER_NOTES_RE = re.compile(
 # Heading pattern for splitting Markdown into sections.
 _HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)$", flags=re.MULTILINE)
 
-# Page break marker that Docling may insert.
-_PAGE_BREAK_RE = re.compile(r"---\s*\n|<!-- page \d+ -->", flags=re.IGNORECASE)
-
 
 def _extract_speaker_notes_fallback(pptx_path: str) -> dict[int, str]:
     """Use python-pptx to extract speaker notes as fallback.
@@ -68,10 +65,8 @@ def _insert_image_references(
 
     for position, item in pairs:
         marker = (
-            f"<!-- IMAGE_REF: {item.s3_url} page={item.page} index={item.image_index} -->\n"
-            f"![Image]({item.s3_url})\n"
-            f"**Summary:** \n"
-            f"<!-- /IMAGE_REF -->"
+            f'<IMAGE_REFERENCE src="{item.s3_url}" page="{item.page}" index="{item.image_index}">'
+            f"</IMAGE_REFERENCE>"
         )
         # Insert at the position (or end if position exceeds length).
         pos = min(position, len(markdown))
@@ -100,41 +95,62 @@ def _append_speaker_notes(markdown: str, notes: dict[int, str]) -> str:
 
 
 def _split_markdown_to_text_blocks(markdown: str) -> list[TextBlock]:
-    """Split Markdown into TextBlock objects by heading-based sections.
+    """Split Markdown into TextBlock objects.
 
-    Each section is delimited by a heading (H1-H3). Content before the
-    first heading goes into a default section. Page numbers are estimated
-    from page break markers or section index.
+    Strategy (in priority order):
+    1. Split on Docling page-break markers (``<!-- page N -->`` or ``---``).
+       Each segment becomes one TextBlock with the correct page number.
+    2. If no page-break markers exist, split on H1-H3 headings.
+    3. Fallback: emit the entire content as a single block.
     """
     if not markdown.strip():
         return []
 
-    blocks: list[TextBlock] = []
+    # ── Strategy 1: page-break markers ──────────────────────────────────────
+    _PAGE_MARKER_RE = re.compile(r"<!-- page (\d+) -->", re.IGNORECASE)
+    page_markers = list(_PAGE_MARKER_RE.finditer(markdown))
 
-    # Find all headings with their positions.
+    if page_markers:
+        blocks: list[TextBlock] = []
+        # Content before the first marker belongs to page 1.
+        pre = markdown[: page_markers[0].start()].strip()
+        if pre:
+            blocks.append(TextBlock(page=1, section="content", text=pre))
+        for i, m in enumerate(page_markers):
+            page_no = int(m.group(1))
+            start = m.end()
+            end = page_markers[i + 1].start() if i + 1 < len(page_markers) else len(markdown)
+            text = markdown[start:end].strip()
+            if text:
+                blocks.append(TextBlock(page=page_no, section="content", text=text))
+        return blocks
+
+    # ── Strategy 2: heading-based sections ──────────────────────────────────
     headings = list(_HEADING_RE.finditer(markdown))
 
     if not headings:
-        # No headings — emit the entire content as one block.
-        blocks.append(TextBlock(page=1, section="content", text=markdown.strip()))
-        return blocks
+        # Strategy 3: single block.
+        blocks = []
+        # Split on bare ``---`` page separators as a last resort.
+        segments = re.split(r"^---\s*$", markdown, flags=re.MULTILINE)
+        for page_no, seg in enumerate(segments, start=1):
+            text = seg.strip()
+            if text:
+                blocks.append(TextBlock(page=page_no, section="content", text=text))
+        return blocks or [TextBlock(page=1, section="content", text=markdown.strip())]
 
-    # Content before the first heading.
+    blocks = []
     pre_heading_text = markdown[: headings[0].start()].strip()
     if pre_heading_text:
         blocks.append(TextBlock(page=1, section="preamble", text=pre_heading_text))
 
-    # Process each heading section.
     for i, match in enumerate(headings):
         section_name = match.group(2).strip()
         start = match.start()
         end = headings[i + 1].start() if i + 1 < len(headings) else len(markdown)
         section_text = markdown[start:end].strip()
-
         if section_text:
-            # Estimate page number from section index (1-based).
-            page = i + 1
-            blocks.append(TextBlock(page=page, section=section_name, text=section_text))
+            blocks.append(TextBlock(page=i + 1, section=section_name, text=section_text))
 
     return blocks
 
