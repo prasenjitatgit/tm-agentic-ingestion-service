@@ -1,16 +1,13 @@
 """SQLAlchemy ORM models.
 
 Tables:
-    documents        — file metadata + lifecycle (NEW → PROCESSING → EMBEDDED | FAILED)
-    document_chunks  — split text segments
-    embeddings       — vector per chunk, HNSW-indexed for cosine search
+    documents        — file metadata + lifecycle (TO BE INGESTED → CHUNKED → EMBEDDED → INGESTED)
+    document_chunks  — split text segments (immutable once created)
+    embeddings       — vector per chunk, HNSW-indexed for cosine search (immutable once created)
 
-NOTE: This module matches the ACTUAL production database schema where:
-    - documents.doc_id is VARCHAR(100), not UUID
-    - documents.error (JSONB) stores failure details
-    - documents has extra columns: operation, failed_step
-    - document_chunks uses doc_id VARCHAR(100) FK
-    - embeddings.vector dimension is controlled by config (EMBED_DIM)
+Status lifecycle:
+    Ingestion path:  TO BE INGESTED → CHUNKED → EMBEDDED → INGESTED
+    Deletion path:   INGESTED → TO BE DELETED → DELETED
 """
 
 from __future__ import annotations
@@ -20,13 +17,11 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
-    BigInteger,
     DateTime,
     ForeignKey,
     Integer,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -35,12 +30,21 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from app.core.config import get_settings
 
 # ── Status constants ─────────────────────────────────────────────────────────
-STATUS_NEW = "NEW"
-STATUS_PROCESSING = "PROCESSING"
+STATUS_TO_BE_INGESTED = "TO BE INGESTED"
+STATUS_CHUNKED = "CHUNKED"
 STATUS_EMBEDDED = "EMBEDDED"
-STATUS_FAILED = "FAILED"
+STATUS_INGESTED = "INGESTED"
+STATUS_TO_BE_DELETED = "TO BE DELETED"
+STATUS_DELETED = "DELETED"
 
-ALLOWED_STATUSES = (STATUS_NEW, STATUS_PROCESSING, STATUS_EMBEDDED, STATUS_FAILED)
+ALLOWED_STATUSES = (
+    STATUS_TO_BE_INGESTED,
+    STATUS_CHUNKED,
+    STATUS_EMBEDDED,
+    STATUS_INGESTED,
+    STATUS_TO_BE_DELETED,
+    STATUS_DELETED,
+)
 
 _settings = get_settings()
 
@@ -52,59 +56,65 @@ class Base(DeclarativeBase):
 class Document(Base):
     """File metadata + ingestion lifecycle.
 
-    Matches the production schema where doc_id is VARCHAR(100).
+    Primary key is UUID with server-generated default via gen_random_uuid().
     """
 
     __tablename__ = "documents"
 
-    doc_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    doc_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
     doc_type: Mapped[str] = mapped_column(String(30), nullable=False)
-    doc_hash: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    doc_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     doc_name: Mapped[str] = mapped_column(String(200), nullable=False)
     author: Mapped[str | None] = mapped_column(String(100))
-    source: Mapped[str | None] = mapped_column(String(500))
+    source: Mapped[str] = mapped_column(String(500), nullable=False)
     version: Mapped[str | None] = mapped_column(String(20))
     s3_url: Mapped[str] = mapped_column(String(500), nullable=False)
     knowledge_base_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default=STATUS_NEW)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=STATUS_TO_BE_INGESTED
+    )
     error: Mapped[dict | None] = mapped_column(JSONB)
 
-    # Extra lifecycle columns present in production schema.
-    operation: Mapped[str] = mapped_column(String(10), nullable=False, default=STATUS_NEW)
-    failed_step: Mapped[str | None] = mapped_column(String(30))
-
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    created_by: Mapped[str] = mapped_column(String(100), default="ingestion-service")
-    updated_by: Mapped[str] = mapped_column(String(100), default="ingestion-service")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(100), nullable=False)
 
 
 class DocumentChunk(Base):
-    """Single text chunk linked to a Document."""
+    """Single text chunk linked to a Document.
+
+    Chunks are immutable once created — no updated_at/updated_by columns.
+    """
 
     __tablename__ = "document_chunks"
 
     chunk_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
     )
-    doc_id: Mapped[str] = mapped_column(
-        String(100), ForeignKey("documents.doc_id", ondelete="CASCADE"), nullable=False
+    doc_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.doc_id"), nullable=False
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    normalized_content: Mapped[str | None] = mapped_column(Text)
-    chunk_hash: Mapped[str | None] = mapped_column(String(128))
-    chunk_simhash: Mapped[int | None] = mapped_column(BigInteger)
-    section: Mapped[str | None] = mapped_column(Text)
-    page: Mapped[int | None] = mapped_column(Integer)
+    page_no: Mapped[int | None] = mapped_column(Integer)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    created_by: Mapped[str] = mapped_column(String(100), default="ingestion-service")
-    updated_by: Mapped[str] = mapped_column(String(100), default="ingestion-service")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
 
 
 class Embedding(Base):
-    """One vector per chunk, HNSW-indexed for cosine search."""
+    """One vector per chunk, HNSW-indexed for cosine search.
+
+    Embeddings are immutable once created — no updated_at/updated_by columns.
+    """
 
     __tablename__ = "embeddings"
 
@@ -113,13 +123,15 @@ class Embedding(Base):
     )
     chunk_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("document_chunks.chunk_id", ondelete="CASCADE"),
+        ForeignKey("document_chunks.chunk_id"),
         nullable=False,
         unique=True,
     )
-    vector: Mapped[list[float]] = mapped_column(Vector(_settings.embed_dim), nullable=False)
+    vector: Mapped[list[float]] = mapped_column(
+        Vector(_settings.embed_dim), nullable=False
+    )
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    created_by: Mapped[str] = mapped_column(String(100), default="ingestion-service")
-    updated_by: Mapped[str] = mapped_column(String(100), default="ingestion-service")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)

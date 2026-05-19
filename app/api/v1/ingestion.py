@@ -2,6 +2,7 @@
 
 Endpoints
 ---------
+* POST /v1/ingestion/documents      → submit a document for ingestion
 * POST /v1/ingestion/run            → start a background job (returns job_id)
 * GET  /healthz                     → liveness
 * GET  /readyz                      → readiness (DB + S3 + NIM key)
@@ -17,7 +18,8 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.graph import run_ingestion_job
-from app.services.db_service import ping as db_ping
+from app.models.db_models import Document, STATUS_TO_BE_INGESTED
+from app.services.db_service import ping as db_ping, session_scope
 from app.services.s3_service import S3Client
 from app.utils.logger import get_logger
 
@@ -32,11 +34,34 @@ router = APIRouter()
 #  API SCHEMAS
 # ─────────────────────────────────────────────────────────────────────────────
 
+DocType = Literal["PDF", "EXCEL", "PPT", "DOCX"]
 KnowledgeBaseType = Literal["Maintenance", "Construction", "BusinessIntelligence"]
 
 
+class DocumentSubmitRequest(BaseModel):
+    """Payload for submitting a document for ingestion."""
+
+    doc_type: DocType
+    doc_hash: str = Field(..., min_length=1, max_length=100)
+    doc_name: str = Field(..., min_length=1, max_length=200)
+    source: str = Field(..., min_length=1, max_length=500)
+    s3_url: str = Field(..., min_length=1, max_length=500)
+    knowledge_base_type: KnowledgeBaseType
+    author: Optional[str] = Field(default=None, max_length=100)
+    version: Optional[str] = Field(default=None, max_length=20)
+    created_by: str = Field(..., min_length=1, max_length=100)
+
+
+class DocumentSubmitResponse(BaseModel):
+    """Response after a document is accepted for ingestion."""
+
+    doc_id: str
+    status: str
+    message: str
+
+
 class IngestionRunRequest(BaseModel):
-    """Filter criteria for selecting NEW documents."""
+    """Filter criteria for selecting TO BE INGESTED documents."""
 
     knowledge_base_type: Optional[KnowledgeBaseType] = None
     max_documents: int = Field(default=1, ge=1, le=100)
@@ -57,6 +82,47 @@ class HealthResponse(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 #  ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/v1/ingestion/documents",
+    response_model=DocumentSubmitResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def submit_document(payload: DocumentSubmitRequest) -> DocumentSubmitResponse:
+    """Submit a document for ingestion.
+
+    Inserts the document with status TO BE INGESTED for the pipeline to pick up.
+    """
+    with session_scope() as session:
+        new_doc = Document(
+            doc_type=payload.doc_type,
+            doc_hash=payload.doc_hash,
+            doc_name=payload.doc_name,
+            source=payload.source,
+            s3_url=payload.s3_url,
+            knowledge_base_type=payload.knowledge_base_type,
+            author=payload.author,
+            version=payload.version,
+            status=STATUS_TO_BE_INGESTED,
+            created_by=payload.created_by,
+            updated_by=payload.created_by,
+        )
+        session.add(new_doc)
+        session.flush()  # Populate server-generated doc_id
+
+        doc_id = str(new_doc.doc_id)
+        log.info(
+            "document_submitted",
+            doc_id=doc_id,
+            doc_name=payload.doc_name,
+        )
+
+    return DocumentSubmitResponse(
+        doc_id=doc_id,
+        status=STATUS_TO_BE_INGESTED,
+        message="Document accepted for ingestion",
+    )
 
 
 @router.post(

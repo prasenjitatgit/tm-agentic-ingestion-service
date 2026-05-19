@@ -19,7 +19,7 @@ KnowledgeBaseType = Literal["Maintenance", "Construction", "BusinessIntelligence
 class DocMetadata(BaseModel):
     """Stable view of a `documents` row carried through the graph."""
 
-    doc_id: str
+    doc_id: str  # UUID serialized as string for state compatibility
     doc_hash: str
     doc_name: str
     s3_url: str
@@ -56,13 +56,9 @@ class Chunk(BaseModel):
     """A single chunk ready for embedding / persistence."""
 
     chunk_id: Optional[str] = None
-    chunk_hash: str
-    chunk_simhash: int
-    section: Optional[str] = None
     page_no: Optional[int] = None
-    embedding_id: Optional[str] = None
     content: str
-    normalized_content: str
+    embedding_id: Optional[str] = None
     vector: Optional[list[float]] = None
 
 

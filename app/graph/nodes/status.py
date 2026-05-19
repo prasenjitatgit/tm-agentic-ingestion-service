@@ -2,11 +2,13 @@
 
 Hosts:
 
-* `node(name)` decorator   — structured logging + exception capture into state.
-* `classify(exc)`          — transient vs. permanent error classifier.
-* `update_status_node`     — mark `documents.status = EMBEDDED`.
-* `retry_handler_node`     — central backoff + retry router.
-* `failure_handler_node`   — sink for non-retryable / exhausted failures.
+* `node(name)` decorator            — structured logging + exception capture into state.
+* `classify(exc)`                    — transient vs. permanent error classifier.
+* `update_status_chunked_node`       — mark `documents.status = CHUNKED`.
+* `update_status_embedded_node`      — mark `documents.status = EMBEDDED`.
+* `update_status_node`               — mark `documents.status = INGESTED` (final step).
+* `retry_handler_node`               — central backoff + retry router.
+* `failure_handler_node`             — sink for non-retryable / exhausted failures.
 """
 
 from __future__ import annotations
@@ -29,8 +31,9 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from app.core.config import get_settings
 from app.graph.state import AgentState, ErrorInfo, RetryContext
 from app.models.db_models import (
+    STATUS_CHUNKED,
     STATUS_EMBEDDED,
-    STATUS_FAILED,
+    STATUS_INGESTED,
     Document,
 )
 from app.services.db_service import session_scope
@@ -154,9 +157,41 @@ def node(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@node("update_status_chunked")
+def update_status_chunked_node(state: AgentState) -> dict[str, Any]:
+    """Set `documents.status = CHUNKED` after chunks are persisted."""
+    meta = state["doc_metadata"]
+
+    with session_scope() as session:
+        session.execute(
+            update(Document)
+            .where(Document.doc_id == meta.doc_id)
+            .values(status=STATUS_CHUNKED, updated_by="ingestion-service")
+        )
+
+    log.info("status_updated", doc_id=meta.doc_id, status=STATUS_CHUNKED)
+    return {}
+
+
+@node("update_status_embedded")
+def update_status_embedded_node(state: AgentState) -> dict[str, Any]:
+    """Set `documents.status = EMBEDDED` after embeddings are persisted."""
+    meta = state["doc_metadata"]
+
+    with session_scope() as session:
+        session.execute(
+            update(Document)
+            .where(Document.doc_id == meta.doc_id)
+            .values(status=STATUS_EMBEDDED, updated_by="ingestion-service")
+        )
+
+    log.info("status_updated", doc_id=meta.doc_id, status=STATUS_EMBEDDED)
+    return {}
+
+
 @node("update_status")
 def update_status_node(state: AgentState) -> dict[str, Any]:
-    """Sync `documents.status = EMBEDDED` and emit summary."""
+    """Sync `documents.status = INGESTED` (final ingestion step) and emit summary."""
     meta = state["doc_metadata"]
     chunks = state.get("chunks") or []
     images = state.get("extracted_image_items") or []
@@ -165,7 +200,7 @@ def update_status_node(state: AgentState) -> dict[str, Any]:
         session.execute(
             update(Document)
             .where(Document.doc_id == meta.doc_id)
-            .values(status=STATUS_EMBEDDED, error=None, updated_by="ingestion-service")
+            .values(status=STATUS_INGESTED, error=None, updated_by="ingestion-service")
         )
 
     local_path = state.get("local_path")
@@ -177,7 +212,7 @@ def update_status_node(state: AgentState) -> dict[str, Any]:
 
     summary = {
         "doc_id": meta.doc_id,
-        "status": STATUS_EMBEDDED,
+        "status": STATUS_INGESTED,
         "chunks": len(chunks),
         "images": len(images),
     }
@@ -186,31 +221,35 @@ def update_status_node(state: AgentState) -> dict[str, Any]:
 
 
 def failure_handler_node(state: AgentState) -> dict[str, Any]:
-    """Sink for non-retryable / exhausted failures: set status=FAILED."""
+    """Sink for non-retryable / exhausted failures.
+
+    Since STATUS_FAILED is removed from the lifecycle, the document remains
+    in its current status (allowing retry) and error details are stored in
+    the `error` JSONB column.
+    """
     meta = state.get("doc_metadata")
     err = state.get("error")
     rc = state.get("retry_context") or RetryContext()
 
     payload: dict[str, Any] = {}
     if meta is not None and err is not None:
+        error_details = {
+            "type": err.type,
+            "message": err.message,
+            "failed_node": rc.failed_node,
+            "retry_count": rc.retry_count,
+        }
         with session_scope() as session:
             session.execute(
                 update(Document)
                 .where(Document.doc_id == meta.doc_id)
                 .values(
-                    status=STATUS_FAILED,
-                    error={
-                        "type": err.type,
-                        "message": err.message,
-                        "failed_node": rc.failed_node,
-                        "retry_count": rc.retry_count,
-                    },
+                    error=error_details,
                     updated_by="ingestion-service",
                 )
             )
         payload = {
             "doc_id": meta.doc_id,
-            "status": STATUS_FAILED,
             "failed_node": rc.failed_node,
             "error_type": err.type,
             "error_message": err.message,

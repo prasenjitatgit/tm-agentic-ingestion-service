@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     vlm_model: str = "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"
     embed_model: str = "nvidia/llama-nemotron-embed-1b-v2"
-    embed_dim: int = 1536
+    embed_dim: int = 1024
     embed_batch_size: int = 16
     vlm_max_image_px: int = 1024
     vlm_timeout_seconds: float = 120.0
