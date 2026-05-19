@@ -18,3 +18,13 @@ build/
 
 # Except for the README
 !README.md
+
+# Agent generated folders
+.hypothesis/
+.kiro/
+
+# Documentation folder
+docs/
+
+# Testing Files
+tests/
