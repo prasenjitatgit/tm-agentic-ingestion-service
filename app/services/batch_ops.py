@@ -1,7 +1,7 @@
-"""Batch insert operations for chunks and embeddings.
+"""Batch operations for chunks and embeddings.
 
-Provides efficient bulk INSERT statements to minimize database round-trips
-during the ingestion pipeline.
+Provides efficient bulk INSERT and DELETE statements to minimize database
+round-trips during the ingestion pipeline.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -72,3 +72,61 @@ def batch_insert_embeddings(
     stmt = pg_insert(Embedding).values(rows)
     stmt = stmt.on_conflict_do_nothing(index_elements=["chunk_id"])
     session.execute(stmt)
+
+
+def delete_chunks_and_embeddings_for_document(
+    session: Session, doc_id: uuid.UUID
+) -> int:
+    """Delete all embeddings and chunks for a document.
+
+    Deletes embeddings first (FK constraint on chunk_id), then deletes the
+    chunks themselves. The caller owns the transaction — no commit or rollback
+    is performed inside this function.
+
+    Args:
+        session: Active SQLAlchemy database session (caller manages transaction).
+        doc_id: UUID of the document whose chunks and embeddings should be removed.
+
+    Returns:
+        Number of deleted chunks.
+    """
+    # Subquery: all chunk_ids belonging to this document
+    chunk_ids_subquery = select(DocumentChunk.chunk_id).where(
+        DocumentChunk.doc_id == doc_id
+    )
+
+    # Delete embeddings referencing those chunks (must happen first due to FK)
+    session.execute(
+        delete(Embedding).where(Embedding.chunk_id.in_(chunk_ids_subquery))
+    )
+
+    # Delete the chunks themselves
+    result = session.execute(
+        delete(DocumentChunk).where(DocumentChunk.doc_id == doc_id)
+    )
+
+    return result.rowcount
+
+
+def delete_embeddings_for_document(session: Session, doc_id: uuid.UUID) -> int:
+    """Delete all embeddings whose chunk_id belongs to the given document.
+
+    Uses a subquery to identify chunk_ids belonging to the document, then
+    deletes all matching embedding rows. The caller owns the transaction —
+    no commit or rollback is performed here.
+
+    Args:
+        session: Active SQLAlchemy database session (caller manages transaction).
+        doc_id: UUID of the document whose embeddings should be deleted.
+
+    Returns:
+        Count of deleted embedding rows.
+    """
+    chunk_ids_subquery = select(DocumentChunk.chunk_id).where(
+        DocumentChunk.doc_id == doc_id
+    )
+
+    stmt = delete(Embedding).where(Embedding.chunk_id.in_(chunk_ids_subquery))
+    result = session.execute(stmt)
+
+    return result.rowcount

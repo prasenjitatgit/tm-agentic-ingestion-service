@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     max_retries: int = 3
     retry_backoff_base_seconds: float = 1.0
     retry_backoff_cap_seconds: float = 30.0
+    max_document_retries: int = Field(default=5, ge=1)  # Dead letter guard threshold
 
     # ── Circuit Breakers (per spec: fail_max=3, reset_timeout=60) ───────────
     cb_vlm_fail_max: int = 3

@@ -4,8 +4,6 @@ Endpoints
 ---------
 * POST /v1/ingestion/documents      → submit a document for ingestion
 * POST /v1/ingestion/run            → start a background job (returns job_id)
-* GET  /healthz                     → liveness
-* GET  /readyz                      → readiness (DB + S3 + NIM key)
 """
 
 from __future__ import annotations
@@ -13,19 +11,17 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, status
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.graph import run_ingestion_job
 from app.models.db_models import Document, STATUS_TO_BE_INGESTED
-from app.services.db_service import ping as db_ping, session_scope
-from app.services.s3_service import S3Client
+from app.services.db_service import session_scope
 from app.utils.logger import get_logger
 
 log = get_logger(__name__)
 _settings = get_settings()
-_s3 = S3Client()
 
 router = APIRouter()
 
@@ -44,7 +40,8 @@ class DocumentSubmitRequest(BaseModel):
     doc_type: DocType
     doc_hash: str = Field(..., min_length=1, max_length=100)
     doc_name: str = Field(..., min_length=1, max_length=200)
-    source: str = Field(..., min_length=1, max_length=500)
+    source_url: str = Field(..., min_length=1, max_length=500)
+    source_updated_at: str = Field(..., description="ISO 8601 timestamp of when the source was last updated")
     s3_url: str = Field(..., min_length=1, max_length=500)
     knowledge_base_type: KnowledgeBaseType
     author: Optional[str] = Field(default=None, max_length=100)
@@ -74,11 +71,6 @@ class IngestionRunResponse(BaseModel):
     status: Literal["STARTED"] = "STARTED"
 
 
-class HealthResponse(BaseModel):
-    status: Literal["ok", "degraded"]
-    checks: dict[str, bool] = Field(default_factory=dict)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +91,8 @@ def submit_document(payload: DocumentSubmitRequest) -> DocumentSubmitResponse:
             doc_type=payload.doc_type,
             doc_hash=payload.doc_hash,
             doc_name=payload.doc_name,
-            source=payload.source,
+            source_url=payload.source_url,
+            source_updated_at=payload.source_updated_at,
             s3_url=payload.s3_url,
             knowledge_base_type=payload.knowledge_base_type,
             author=payload.author,
@@ -147,37 +140,3 @@ def trigger_ingestion(
     )
     log.info("ingestion_job_accepted", job_id=job_id, request_filter=request_filter)
     return IngestionRunResponse(job_id=job_id)
-
-
-@router.get("/healthz", response_model=HealthResponse)
-def healthz() -> HealthResponse:
-    """Liveness probe."""
-    return HealthResponse(status="ok", checks={"alive": True})
-
-
-@router.get("/readyz", response_model=HealthResponse)
-def readyz() -> HealthResponse:
-    """Readiness probe: DB + S3 reachable, NIM key configured."""
-    checks: dict[str, bool] = {}
-    overall_ok = True
-
-    try:
-        checks["db"] = db_ping()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("readyz_db_failed", error=str(exc))
-        checks["db"] = False
-        overall_ok = False
-
-    try:
-        checks["s3"] = _s3.ping()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("readyz_s3_failed", error=str(exc))
-        checks["s3"] = False
-        overall_ok = False
-
-    checks["nim_configured"] = bool(_settings.nvidia_api_key)
-    overall_ok = overall_ok and checks["nim_configured"]
-
-    if not overall_ok:
-        raise HTTPException(status_code=503, detail={"status": "degraded", "checks": checks})
-    return HealthResponse(status="ok", checks=checks)

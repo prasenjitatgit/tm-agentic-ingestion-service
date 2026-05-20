@@ -15,6 +15,15 @@ from app.core.config import get_settings
 DocType = Literal["PDF", "EXCEL", "PPT", "DOCX"]
 KnowledgeBaseType = Literal["Maintenance", "Construction", "BusinessIntelligence"]
 
+ALLOWED_STATUSES: list[str] = [
+    "TO BE INGESTED",
+    "CHUNKED",
+    "EMBEDDED",
+    "INGESTED",
+    "TO BE DELETED",
+    "DELETED",
+]
+
 
 class DocMetadata(BaseModel):
     """Stable view of a `documents` row carried through the graph."""
@@ -25,6 +34,7 @@ class DocMetadata(BaseModel):
     s3_url: str
     doc_type: DocType
     knowledge_base_type: KnowledgeBaseType
+    status: str = "TO BE INGESTED"
 
 
 class ImageItem(BaseModel):

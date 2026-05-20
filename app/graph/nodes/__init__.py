@@ -12,8 +12,6 @@ from app.graph.nodes.status import (
     failure_handler_node,
     node,
     retry_handler_node,
-    update_status_chunked_node,
-    update_status_embedded_node,
     update_status_node,
 )
 
@@ -31,7 +29,5 @@ __all__ = [
     "retry_handler_node",
     "select_parser_node",
     "summarize_images_node",
-    "update_status_chunked_node",
-    "update_status_embedded_node",
     "update_status_node",
 ]

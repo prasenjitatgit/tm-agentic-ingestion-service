@@ -53,7 +53,7 @@ class DoclingConverterService:
 
     def _build_converter(self) -> "DocumentConverter":
         """Configure and return a DocumentConverter based on settings."""
-        from docling.document_converter import DocumentConverter
+        from docling.document_converter import DocumentConverter, PdfFormatOption
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         from docling.datamodel.base_models import InputFormat
         from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
@@ -89,10 +89,10 @@ class DoclingConverterService:
                 InputFormat.XLSX,
             ],
             format_options={
-                InputFormat.PDF: {
-                    "pipeline_cls": StandardPdfPipeline,
-                    "pipeline_options": pipeline_options,
-                },
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_cls=StandardPdfPipeline,
+                    pipeline_options=pipeline_options,
+                ),
             },
         )
 

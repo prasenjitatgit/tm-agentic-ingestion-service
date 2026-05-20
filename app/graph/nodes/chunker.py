@@ -3,6 +3,10 @@
 Splits assembled (or raw) text blocks into chunks using the MarkdownChunker,
 which respects heading boundaries, protected blocks (tables, images, speaker
 notes), and applies overlap between adjacent chunks.
+
+The node is idempotent: it deletes any existing chunks and embeddings for the
+document before inserting new chunks, and advances the document status to
+CHUNKED within the same atomic transaction.
 """
 
 from __future__ import annotations
@@ -13,7 +17,8 @@ from typing import Any
 from app.core.config import get_settings
 from app.graph.nodes.status import node
 from app.graph.state import AgentState, AssembledText, Chunk
-from app.services.batch_ops import batch_insert_chunks
+from app.models.db_models import Document, STATUS_CHUNKED
+from app.services.batch_ops import batch_insert_chunks, delete_chunks_and_embeddings_for_document
 from app.services.db_service import session_scope
 
 
@@ -24,7 +29,17 @@ from app.services.db_service import session_scope
 
 @node("generate_chunks")
 def generate_chunks_node(state: AgentState) -> dict[str, Any]:
-    """Split assembled (or raw) text into chunks and persist via batch insert."""
+    """Idempotent chunker: cleanup → insert → status update in one transaction.
+
+    Within a single session_scope() transaction:
+    1. Delete all embeddings for the document's chunks (cascading cleanup).
+    2. Delete all existing chunks for the document.
+    3. Insert new chunks.
+    4. Update document status to CHUNKED and set error=NULL.
+
+    If zero chunks are produced, returns {"chunks": []} without modifying the
+    database. On transaction failure, all changes are rolled back automatically.
+    """
     meta = state["doc_metadata"]
 
     blocks = list(state.get("assembled_texts") or [])
@@ -59,13 +74,23 @@ def generate_chunks_node(state: AgentState) -> dict[str, Any]:
                 }
             )
 
+    # If zero chunks are produced, skip insertion and leave status unchanged.
     if not chunk_dicts:
         return {"chunks": []}
 
-    # Persist all chunks in a single batch INSERT.
+    doc_id = uuid.UUID(meta.doc_id)
+
+    # Atomic transaction: cleanup → insert → status update.
     with session_scope() as session:
-        chunk_ids = batch_insert_chunks(
-            session, doc_id=uuid.UUID(meta.doc_id), chunks=chunk_dicts
+        # 1 & 2. Delete existing embeddings and chunks for this document.
+        delete_chunks_and_embeddings_for_document(session, doc_id)
+
+        # 3. Insert new chunks.
+        chunk_ids = batch_insert_chunks(session, doc_id=doc_id, chunks=chunk_dicts)
+
+        # 4. Update document status to CHUNKED and clear error.
+        session.query(Document).filter(Document.doc_id == doc_id).update(
+            {"status": STATUS_CHUNKED, "error": None}
         )
 
     # Build simplified Chunk state objects.

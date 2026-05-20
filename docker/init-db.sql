@@ -13,22 +13,23 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 --   Deletion path:  INGESTED → TO BE DELETED → DELETED
 CREATE TABLE IF NOT EXISTS documents (
     doc_id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    doc_type            TEXT NOT NULL CHECK (doc_type IN ('PDF', 'EXCEL', 'PPT', 'DOCX')),
-    doc_hash            TEXT NOT NULL,
-    doc_name            TEXT NOT NULL,
-    author              TEXT,
-    source              TEXT NOT NULL,
-    version             TEXT,
-    s3_url              TEXT NOT NULL,
-    knowledge_base_type TEXT NOT NULL
+    doc_type            VARCHAR(30) NOT NULL CHECK (doc_type IN ('PDF', 'EXCEL', 'PPT', 'DOCX')),
+    doc_hash            VARCHAR(100) NOT NULL UNIQUE,
+    doc_name            VARCHAR(200) NOT NULL,
+    author              VARCHAR(100),
+    source_url          VARCHAR(500) NOT NULL,
+    source_updated_at   TIMESTAMPTZ NOT NULL,
+    version             VARCHAR(20),
+    s3_url              VARCHAR(500) NOT NULL,
+    knowledge_base_type VARCHAR(50) NOT NULL
         CHECK (knowledge_base_type IN ('Maintenance', 'Construction', 'BusinessIntelligence')),
-    status              TEXT NOT NULL DEFAULT 'TO BE INGESTED'
+    status              VARCHAR(20) NOT NULL DEFAULT 'TO BE INGESTED'
         CHECK (status IN ('TO BE INGESTED', 'CHUNKED', 'EMBEDDED', 'INGESTED', 'TO BE DELETED', 'DELETED')),
     error               JSONB,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by          TEXT NOT NULL,
-    updated_by          TEXT NOT NULL
+    created_by          VARCHAR(100) NOT NULL,
+    updated_by          VARCHAR(100) NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_status_created ON documents (status, created_at);

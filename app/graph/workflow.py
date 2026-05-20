@@ -3,20 +3,20 @@
 Topology
 --------
 Ingestion path:
-    fetch_metadata → select_parser → docling_convert
-       ↓                                    ↓
-       └─ retry_handler     (has_images?) ──► summarize_images → assemble
-                                        ↘ (none) ─────────────────╮
-                                                                  ▼
-                                                        generate_chunks
-                                                                  ↓
-                                                     update_status_chunked
-                                                                  ↓
-                                                         embed_chunks
-                                                                  ↓
-                                                     update_status_embedded
-                                                                  ↓
-                                                     update_status_ingested → END
+    fetch_metadata → route_by_status
+       ↓
+       ├─ TO BE INGESTED → select_parser → docling_convert
+       │                                        ↓
+       │                          (has_images?) ──► summarize_images → assemble
+       │                                    ↘ (none) ─────────────────╮
+       │                                                              ▼
+       │                                                    generate_chunks
+       │                                                              ↓
+       ├─ CHUNKED ──────────────────────────────────────► embed_chunks
+       │                                                              ↓
+       ├─ EMBEDDED ─────────────────────────────────► update_status_ingested → END
+       │
+       └─ no doc → END
 
 Deletion path:
     fetch_deletion → delete_document → END
@@ -49,12 +49,15 @@ from app.graph.nodes import (
     retry_handler_node,
     select_parser_node,
     summarize_images_node,
-    update_status_chunked_node,
-    update_status_embedded_node,
     update_status_node,
 )
 from app.graph.state import AgentState, RetryContext, initial_state
-from app.models.db_models import STATUS_INGESTED
+from app.models.db_models import (
+    STATUS_CHUNKED,
+    STATUS_EMBEDDED,
+    STATUS_INGESTED,
+    STATUS_TO_BE_INGESTED,
+)
 from app.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -65,13 +68,21 @@ log = get_logger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_STATUS_RESUME_MAP: dict[str, str] = {
+    STATUS_TO_BE_INGESTED: "select_parser",
+    STATUS_CHUNKED: "embed_chunks",
+    STATUS_EMBEDDED: "update_status_ingested",
+}
+
+
 def route_after_fetch(state: AgentState) -> str:
-    """No NEW docs → end gracefully; error → retry; else → select_parser."""
+    """Route based on document status for resumability."""
     if state.get("error") is not None:
         return "retry_handler"
-    if state.get("doc_metadata") is None:
+    meta = state.get("doc_metadata")
+    if meta is None:
         return END
-    return "select_parser"
+    return _STATUS_RESUME_MAP.get(meta.status, "failure_handler")
 
 
 def route_after_select_parser(state: AgentState) -> str:
@@ -122,9 +133,7 @@ def build_graph():
     g.add_node("summarize_images", summarize_images_node)
     g.add_node("assemble", assemble_node)
     g.add_node("generate_chunks", generate_chunks_node)
-    g.add_node("update_status_chunked", update_status_chunked_node)
     g.add_node("embed_chunks", embed_chunks_node)
-    g.add_node("update_status_embedded", update_status_embedded_node)
     g.add_node("update_status_ingested", update_status_node)
     g.add_node("delete_document", delete_document_node)
     g.add_node("retry_handler", retry_handler_node)
@@ -135,7 +144,14 @@ def build_graph():
     g.add_conditional_edges(
         "fetch_metadata",
         route_after_fetch,
-        {"select_parser": "select_parser", "retry_handler": "retry_handler", END: END},
+        {
+            "select_parser": "select_parser",
+            "embed_chunks": "embed_chunks",
+            "update_status_ingested": "update_status_ingested",
+            "failure_handler": "failure_handler",
+            "retry_handler": "retry_handler",
+            END: END,
+        },
     )
     g.add_conditional_edges(
         "select_parser",
@@ -168,21 +184,11 @@ def build_graph():
     )
     g.add_conditional_edges(
         "generate_chunks",
-        functools.partial(route_after_node, success_target="update_status_chunked"),
-        {"update_status_chunked": "update_status_chunked", "retry_handler": "retry_handler"},
-    )
-    g.add_conditional_edges(
-        "update_status_chunked",
         functools.partial(route_after_node, success_target="embed_chunks"),
         {"embed_chunks": "embed_chunks", "retry_handler": "retry_handler"},
     )
     g.add_conditional_edges(
         "embed_chunks",
-        functools.partial(route_after_node, success_target="update_status_embedded"),
-        {"update_status_embedded": "update_status_embedded", "retry_handler": "retry_handler"},
-    )
-    g.add_conditional_edges(
-        "update_status_embedded",
         functools.partial(route_after_node, success_target="update_status_ingested"),
         {"update_status_ingested": "update_status_ingested", "retry_handler": "retry_handler"},
     )
@@ -205,9 +211,7 @@ def build_graph():
             "summarize_images": "summarize_images",
             "assemble": "assemble",
             "generate_chunks": "generate_chunks",
-            "update_status_chunked": "update_status_chunked",
             "embed_chunks": "embed_chunks",
-            "update_status_embedded": "update_status_embedded",
             "update_status": "update_status_ingested",
             "update_status_ingested": "update_status_ingested",
             "delete_document": "delete_document",

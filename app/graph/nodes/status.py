@@ -25,7 +25,7 @@ import httpx
 import pybreaker
 from botocore.exceptions import BotoCoreError, ClientError
 from openai import APIError, APITimeoutError
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from app.core.config import get_settings
@@ -223,9 +223,10 @@ def update_status_node(state: AgentState) -> dict[str, Any]:
 def failure_handler_node(state: AgentState) -> dict[str, Any]:
     """Sink for non-retryable / exhausted failures.
 
-    Since STATUS_FAILED is removed from the lifecycle, the document remains
-    in its current status (allowing retry) and error details are stored in
-    the `error` JSONB column.
+    Records error details and increments retry_count in the error JSONB
+    column WITHOUT changing the document's status. This preserves the
+    document's last successful checkpoint so it remains eligible for retry
+    on the next ingestion run.
     """
     meta = state.get("doc_metadata")
     err = state.get("error")
@@ -233,21 +234,42 @@ def failure_handler_node(state: AgentState) -> dict[str, Any]:
 
     payload: dict[str, Any] = {}
     if meta is not None and err is not None:
-        error_details = {
-            "type": err.type,
-            "message": err.message,
-            "failed_node": rc.failed_node,
-            "retry_count": rc.retry_count,
-        }
-        with session_scope() as session:
-            session.execute(
-                update(Document)
-                .where(Document.doc_id == meta.doc_id)
-                .values(
-                    error=error_details,
-                    updated_by="ingestion-service",
+        try:
+            with session_scope() as session:
+                # Read current error JSONB to get existing retry_count
+                row = session.execute(
+                    select(Document.error).where(Document.doc_id == meta.doc_id)
+                ).scalar_one_or_none()
+
+                existing_retry_count = 0
+                if row is not None and isinstance(row, dict):
+                    existing_retry_count = row.get("retry_count", 0)
+
+                new_retry_count = existing_retry_count + 1
+
+                error_details = {
+                    "type": err.type,
+                    "message": err.message[:2000],
+                    "failed_node": rc.failed_node,
+                    "retry_count": new_retry_count,
+                }
+
+                session.execute(
+                    update(Document)
+                    .where(Document.doc_id == meta.doc_id)
+                    .values(
+                        error=error_details,
+                        updated_by="ingestion-service",
+                    )
                 )
+        except Exception as db_exc:
+            log.error(
+                "failure_handler_db_write_failed",
+                doc_id=meta.doc_id,
+                error_type=type(db_exc).__name__,
+                error_message=str(db_exc),
             )
+
         payload = {
             "doc_id": meta.doc_id,
             "failed_node": rc.failed_node,

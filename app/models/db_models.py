@@ -68,7 +68,10 @@ class Document(Base):
     doc_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     doc_name: Mapped[str] = mapped_column(String(200), nullable=False)
     author: Mapped[str | None] = mapped_column(String(100))
-    source: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     version: Mapped[str | None] = mapped_column(String(20))
     s3_url: Mapped[str] = mapped_column(String(500), nullable=False)
     knowledge_base_type: Mapped[str] = mapped_column(String(50), nullable=False)
