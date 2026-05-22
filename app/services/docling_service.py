@@ -78,7 +78,7 @@ class DoclingConverterService:
 
             pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
 
-        pipeline_options.images_scale = 2.0
+        pipeline_options.images_scale = 1.0
         pipeline_options.generate_picture_images = True
 
         converter = DocumentConverter(
