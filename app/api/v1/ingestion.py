@@ -37,15 +37,17 @@ KnowledgeBaseType = Literal["Maintenance", "Construction", "BusinessIntelligence
 class DocumentSubmitRequest(BaseModel):
     """Payload for submitting a document for ingestion."""
 
+    file_id: Optional[str] = Field(default=None, max_length=100)
+    page_id: Optional[str] = Field(default=None, max_length=100)
     doc_type: DocType
     doc_hash: str = Field(..., min_length=1, max_length=100)
     doc_name: str = Field(..., min_length=1, max_length=200)
     source_url: str = Field(..., min_length=1, max_length=500)
-    source_updated_at: str = Field(..., description="ISO 8601 timestamp of when the source was last updated")
     s3_url: str = Field(..., min_length=1, max_length=500)
+    version: Optional[str] = Field(default=None, max_length=20)
     knowledge_base_type: KnowledgeBaseType
     author: Optional[str] = Field(default=None, max_length=100)
-    version: Optional[str] = Field(default=None, max_length=20)
+    source_updated_at: str = Field(..., description="ISO 8601 timestamp of when the source was last updated")
     created_by: str = Field(..., min_length=1, max_length=100)
 
 
@@ -88,15 +90,17 @@ def submit_document(payload: DocumentSubmitRequest) -> DocumentSubmitResponse:
     """
     with session_scope() as session:
         new_doc = Document(
+            file_id=payload.file_id,
+            page_id=payload.page_id,
             doc_type=payload.doc_type,
             doc_hash=payload.doc_hash,
             doc_name=payload.doc_name,
             source_url=payload.source_url,
-            source_updated_at=payload.source_updated_at,
             s3_url=payload.s3_url,
+            version=payload.version,
             knowledge_base_type=payload.knowledge_base_type,
             author=payload.author,
-            version=payload.version,
+            source_updated_at=payload.source_updated_at,
             status=STATUS_TO_BE_INGESTED,
             created_by=payload.created_by,
             updated_by=payload.created_by,

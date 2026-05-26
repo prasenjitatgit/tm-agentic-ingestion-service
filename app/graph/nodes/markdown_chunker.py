@@ -276,6 +276,68 @@ class MarkdownChunker:
 
         return _TABLE_BLOCK_PATTERN.sub(_split_table_by_rows, markdown)
 
+    def table_to_row_chunks(self, markdown: str) -> list[str]:
+        """Convert Markdown tables into row-level natural language chunks.
+
+        Each row becomes a separate chunk with column names as keys,
+        producing text like: "Segment: Government, Country: Canada, Product: Carretera, ..."
+
+        This gives each row a unique semantic fingerprint for better
+        vector search retrieval on tabular data.
+
+        Args:
+            markdown: Markdown content containing TABLE_BLOCK-wrapped tables.
+
+        Returns:
+            List of natural language row descriptions. Non-table content
+            is returned as-is.
+        """
+        chunks: list[str] = []
+        last_end = 0
+
+        for match in _TABLE_BLOCK_PATTERN.finditer(markdown):
+            # Capture any non-table text before this table
+            before_text = markdown[last_end:match.start()].strip()
+            if before_text:
+                chunks.append(before_text)
+
+            # Parse the table
+            block_content = match.group(0)
+            inner = block_content[len("<!-- TABLE_BLOCK -->"):-len("<!-- /TABLE_BLOCK -->")]
+            lines = [line for line in inner.strip().split("\n") if line.strip()]
+
+            if len(lines) < 3:
+                # Not a valid table — keep as-is
+                chunks.append(block_content)
+                last_end = match.end()
+                continue
+
+            # Parse header columns
+            header_line = lines[0]
+            data_lines = lines[2:]  # Skip separator line
+
+            headers = [h.strip() for h in header_line.strip("|").split("|")]
+
+            # Convert each row to natural language
+            for row_line in data_lines:
+                cells = [c.strip() for c in row_line.strip("|").split("|")]
+                # Pair headers with cell values, skip empty values
+                pairs = []
+                for col, val in zip(headers, cells):
+                    if col and val and val.strip():
+                        pairs.append(f"{col}: {val}")
+                if pairs:
+                    chunks.append(", ".join(pairs))
+
+            last_end = match.end()
+
+        # Capture any trailing non-table text
+        trailing = markdown[last_end:].strip()
+        if trailing:
+            chunks.append(trailing)
+
+        return chunks
+
     # ─────────────────────────────────────────────────────────────────────
     #  Protected Block Extraction
     # ─────────────────────────────────────────────────────────────────────

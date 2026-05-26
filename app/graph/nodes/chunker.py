@@ -64,15 +64,30 @@ def generate_chunks_node(state: AgentState) -> dict[str, Any]:
     chunk_dicts: list[dict[str, Any]] = []
 
     for block in blocks:
-        pieces = chunker.chunk(block.text)
-        for piece in pieces:
-            chunk_dicts.append(
-                {
-                    "content": piece,
-                    "page_no": block.page,
-                    "created_by": "ingestion-service",
-                }
-            )
+        # For EXCEL documents, use row-level chunking for better retrieval
+        if meta.doc_type == "EXCEL":
+            # First wrap bare tables, then convert to row-level chunks
+            wrapped = chunker.wrap_bare_tables(block.text)
+            row_chunks = chunker.table_to_row_chunks(wrapped)
+            for piece in row_chunks:
+                if piece.strip():
+                    chunk_dicts.append(
+                        {
+                            "content": piece,
+                            "page_no": block.page,
+                            "created_by": "ingestion-service",
+                        }
+                    )
+        else:
+            pieces = chunker.chunk(block.text)
+            for piece in pieces:
+                chunk_dicts.append(
+                    {
+                        "content": piece,
+                        "page_no": block.page,
+                        "created_by": "ingestion-service",
+                    }
+                )
 
     # If zero chunks are produced, skip insertion and leave status unchanged.
     if not chunk_dicts:
