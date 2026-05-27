@@ -1,7 +1,8 @@
 """Delete-document graph node.
 
 Handles cleanup of documents marked for deletion by removing associated
-embeddings and chunks, then updating the document status to DELETED.
+embeddings, chunks, and cached query responses, then updating the document
+status to DELETED.
 
 All operations execute within a single transaction for atomicity — if any
 step fails, the transaction rolls back and the document remains in
@@ -10,9 +11,10 @@ TO BE DELETED status for retry.
 
 from __future__ import annotations
 
+import uuid as _uuid
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from app.graph.nodes.status import node
 from app.graph.state import AgentState
@@ -36,13 +38,14 @@ def delete_document_node(state: AgentState) -> dict[str, Any]:
         1. Query all chunk_ids belonging to the document
         2. Delete all embeddings referencing those chunk_ids
         3. Delete all chunks for the document
-        4. Update document status to DELETED
+        4. Deactivate cached query responses for this document
+        5. Update document status to DELETED
 
     Returns:
         State delta with result containing doc_id and status DELETED.
     """
     meta = state["doc_metadata"]
-    doc_id = meta.doc_id
+    doc_id = _uuid.UUID(meta.doc_id) if isinstance(meta.doc_id, str) else meta.doc_id
 
     with session_scope() as session:
         # Step 1: Get all chunk_ids for this document
@@ -64,7 +67,16 @@ def delete_document_node(state: AgentState) -> dict[str, Any]:
             DocumentChunk.doc_id == doc_id
         ).delete(synchronize_session=False)
 
-        # Step 4: Update document status to DELETED
+        # Step 4: Deactivate cached query responses for this document
+        session.execute(
+            text(
+                "UPDATE query_response_cache SET is_active = FALSE, updated_at = NOW() "
+                "WHERE doc_id = :doc_id AND is_active = TRUE"
+            ),
+            {"doc_id": str(doc_id)},
+        )
+
+        # Step 5: Update document status to DELETED
         session.query(Document).filter(
             Document.doc_id == doc_id
         ).update(
@@ -74,8 +86,8 @@ def delete_document_node(state: AgentState) -> dict[str, Any]:
 
     log.info(
         "document_deleted",
-        doc_id=doc_id,
+        doc_id=str(doc_id),
         chunks_removed=len(chunk_id_list),
     )
 
-    return {"result": {"doc_id": doc_id, "status": STATUS_DELETED}}
+    return {"result": {"doc_id": str(doc_id), "status": STATUS_DELETED}}
